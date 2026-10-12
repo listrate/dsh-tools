@@ -8,9 +8,13 @@
 # exactly as long as the server is.
 #
 # Deployment-time configuration (all public values):
-#   DSH_WORKSPACE   workspace root the harness launches from (default /workspace)
-#   DSH_PUBLIC_URL  browser-facing root, e.g. https://agent.example.com (optional)
-#   DSH_URL_FILE    where to persist the authenticated URL (default $HOME/.dsh-web-url)
+#   DSH_WORKSPACE       workspace root the harness launches from (default /workspace)
+#   DSH_PUBLIC_URL      browser-facing root, e.g. https://agent.example.com (optional)
+#   DSH_URL_FILE        where to persist the authenticated URL (default $HOME/.dsh-web-url)
+#   DSH_PROXY_TOKEN_FILE optional: publish the launch token for a fronting reverse
+#                       proxy as an nginx `set $dsh_launch_token "…";` snippet, so
+#                       the proxy can start the token exchange on a browser's
+#                       behalf and users never handle a tokenized URL.
 
 set -eu
 
@@ -23,12 +27,24 @@ WORKSPACE="${DSH_WORKSPACE:-/workspace}"
 PUBLIC_URL="${DSH_PUBLIC_URL:-}"
 URL_FILE="${DSH_URL_FILE:-${HOME:-/root}/.dsh-web-url}"
 LOG_FILE="${DSH_LOG_FILE:-/tmp/dsh-web.log}"
+PROXY_TOKEN_FILE="${DSH_PROXY_TOKEN_FILE:-}"
 
 if [ ! -d "$WORKSPACE" ]; then
   echo "entrypoint: workspace '${WORKSPACE}' does not exist (set DSH_WORKSPACE)" >&2
   exit 1
 fi
 cd "$WORKSPACE"
+
+# Publish an empty token immediately so a fronting proxy can parse its config
+# straight away; the real value follows once the harness prints it. Written to a
+# temporary file and renamed, so a reader never sees a half-written snippet.
+publish_token() {
+  [ -n "$PROXY_TOKEN_FILE" ] || return 0
+  mkdir -p "$(dirname "$PROXY_TOKEN_FILE")"
+  printf 'set $dsh_launch_token "%s";\n' "$1" > "${PROXY_TOKEN_FILE}.tmp"
+  mv "${PROXY_TOKEN_FILE}.tmp" "$PROXY_TOKEN_FILE"
+}
+publish_token ""
 
 # The launcher refuses a wildcard --host, so the bind address lives in the
 # profile patch (host: 0.0.0.0); the token line is the only way to obtain the
@@ -47,6 +63,10 @@ tail -n +1 -F "$LOG_FILE" 2>/dev/null | while IFS= read -r line; do
   case "$line" in
     "dsh web: "*)
       TOKEN="$(printf '%s\n' "$line" | sed -n 's/.*[?&]token=\([A-Za-z0-9_-]*\).*/\1/p' | head -n 1)"
+      if [ -n "$TOKEN" ]; then
+        publish_token "$TOKEN"
+        echo "entrypoint: launch token published to ${PROXY_TOKEN_FILE:-<unset>}" >&2
+      fi
       if [ -n "$PUBLIC_URL" ] && [ -n "$TOKEN" ]; then
         URL="${PUBLIC_URL%/}/?token=${TOKEN}"
         printf 'dsh web: %s\n' "$URL"

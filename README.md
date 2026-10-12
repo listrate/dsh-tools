@@ -48,12 +48,19 @@ Environment variables the entrypoint reads:
 | `DSH_PUBLIC_URL` | *(unset)* | browser-facing root; the startup URL is rewritten to it |
 | `DSH_URL_FILE` | `$HOME/.dsh-web-url` | where the authenticated URL is persisted |
 | `DSH_LOG_FILE` | `/tmp/dsh-web.log` | captured server log |
+| `DSH_PROXY_TOKEN_FILE` | *(unset)* | publish the launch token as an nginx `set $dsh_launch_token "…";` snippet |
 
 The harness requires a one-time **tokenized visit**: the first page load must
 carry the launch token printed as `dsh web: <url>?token=...` (also written to
 `$DSH_URL_FILE`), which exchanges it for a signed session cookie. The token is
 minted per process; the cookie survives restarts as long as `$DSH_HOME` is
 persistent.
+
+Set `DSH_PROXY_TOKEN_FILE` when a reverse proxy runs in the same pod and should
+hide that from users: the token is written to the file as an nginx `set`
+statement (atomically, and as an empty value at startup so the proxy's config
+always parses), the proxy reloads when it changes, and it can then start the
+exchange on a browser's behalf — a user only ever visits the public root.
 
 Arguments are passed through unchanged, so the image doubles as a general
 harness CLI:

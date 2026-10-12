@@ -13,6 +13,10 @@
 ARG NODE_IMAGE=node:24-bookworm-slim
 
 # ── stage 1: artifacthub-mcp (stdio MCP server, source build) ────────────────
+# `npm run build` is a plain tsc compile, NOT a bundle: dist/*.js keeps its
+# runtime imports (@modelcontextprotocol/sdk, fuse.js, yaml, zod), so the
+# production dependency tree and the package.json (type: module) must ship
+# alongside dist/ or the server dies with ERR_MODULE_NOT_FOUND.
 FROM ${NODE_IMAGE} AS artifacthub-builder
 RUN apt-get update \
     && apt-get install -y --no-install-recommends git ca-certificates \
@@ -20,7 +24,8 @@ RUN apt-get update \
 WORKDIR /src
 RUN git clone --depth 1 https://github.com/alexw00/artifacthub-mcp . \
     && npm ci \
-    && npm run build
+    && npm run build \
+    && npm prune --omit=dev
 
 # ── stage 2: dsh runtime ─────────────────────────────────────────────────────
 FROM ${NODE_IMAGE}
@@ -96,8 +101,15 @@ RUN npm install -g --no-audit --no-fund "@deepseek-ai/dsh@${DSH_VERSION}" \
     && dsh --version \
     && command -v dsh
 
-# artifacthub-mcp (stdio, built from source in stage 1)
+# artifacthub-mcp (stdio, built from source in stage 1): dist plus the
+# production node_modules and manifest it resolves its imports through.
 COPY --from=artifacthub-builder /src/dist /usr/local/share/artifacthub-mcp/dist
+COPY --from=artifacthub-builder /src/node_modules /usr/local/share/artifacthub-mcp/node_modules
+COPY --from=artifacthub-builder /src/package.json /usr/local/share/artifacthub-mcp/package.json
+
+# Fail the build rather than ship a server whose imports cannot resolve.
+# (Do not execute dist/index.js: that would start the stdio server and hang.)
+RUN cd /usr/local/share/artifacthub-mcp && npm ls --omit=dev --depth=0
 
 COPY entrypoint.sh /usr/local/bin/entrypoint.sh
 RUN chmod +x /usr/local/bin/entrypoint.sh
